@@ -1,14 +1,16 @@
-/// Distibuted Server for handling Mining Operations. Handles new connections, drops from various
-/// connections, as well as ways to distribute new tasks via (write) as well as get completed tasks
-/// via (read). You can also specify specific clients to send data to.
-/// There is also an init method. Connection errors are handled and given as errors either to the
-/// specified readDrops or if used with a specific connection, an error is given there. There is
-/// a specific handler for each client function.
+/// Distibuted Server for handling Mining Operations. Handles new connections,
+/// drops from various connections, as well as ways to distribute new tasks via
+/// (write) as well as get completed tasks via (read). You can also specify
+/// specific clients to send data to. There is also an init method. Connection
+/// errors are handled and given as errors either to the specified readDrops or
+/// if used with a specific connection, an error is given there. There is a
+/// specific handler for each client function.
 #[allow(unused_imports)]
 use std::{error::Error, sync::mpsc, thread};
 use tokio::{self, runtime::Builder, sync::broadcast, sync::mpsc as tmpsc};
 
 /// TODO: Finish implementing the Server structure
+///
 /// Publicly exposed server struct that represents a server instance.
 pub struct Server {
     status: ServerStatus,
@@ -23,29 +25,36 @@ enum ServerStatus {
     NotRunning,
     Closed,
 }
-/// Message structure for interfacing with various reads, writes to and from the clients
-/// TODO: Implement a generic message type that the server can handle, hopefully at runtime
+/// TODO: Implement a generic message type that the server can handle,
+/// hopefully at runtime.
+///
+/// Message structure for interfacing with various reads, writes to and from
+/// the clients
 struct Message;
 #[allow(dead_code)]
 
-///
-///
-///
+/// TODO:Finish creating the client connection structure, that will hold
+/// various important information about the client
 struct ClientConn {
     receiver: tmpsc::Receiver<Message>,
 }
 
+/// TODO: Finish defining the listener state
 struct ListenerState {}
 
 /// TODO: Finish defining the server state
-///
 struct ServerState {
     close_rx: broadcast::Receiver<()>,
     read_client_rx: tmpsc::Receiver<Message>,
 }
 
-/// TODO:Since creating a server spawns resources and  threads that we need to clean up
-/// afterwards, If the server is still running, we must clean up the resources.
+/// ===========================================================================
+/// STRUCTS AND TYPES ^  FUNCTIONS AND METHODS v
+/// ===========================================================================
+
+/// TODO:Since creating a server spawns resources and  threads that we need to
+/// clean up afterwards, If the server is still running, we must clean up
+/// the resources.
 impl Drop for Server {
     fn drop(&mut self) {}
 }
@@ -79,6 +88,7 @@ impl Server {
         })
     }
 
+    /* TODO: Finish these interfacing functions
     pub fn start(&mut self) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
@@ -117,20 +127,22 @@ impl Server {
         let k = self.close_tx.send(())?;
         Ok(k)
     }
+    */
 }
 
 /// TODO: Finish implementing the server state
+///
 /// serve is the main loop that handles various events atomically, preventing any dataraces.
 /// It interacts with numerous other threads, including ones that store various client
 /// interaction data, the main listening loop for handling new connections, and also
 /// interacting with client functions as well. Only Inner is capable of accessing the
 /// inner server as well.
 impl ServerState {
-    async fn serve(mut self) -> Result<(), Box<dyn Error + Send>> {
+    async fn serve(mut self) {
         loop {
             tokio::select! {
                 value = self.read_client_rx.recv() => (),
-                _ = self.close_rx.recv() => return Ok(()),
+                _ = self.close_rx.recv() => return,
 
             }
         }
