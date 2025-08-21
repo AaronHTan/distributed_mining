@@ -1,5 +1,9 @@
-mod server;
+use tokio;
 
-fn main() {
+mod server;
+use server::Server;
+#[tokio::main(flavor = "multi_thread")]
+async fn main() {
     println!("Hello, world!");
+    let s = Server::new();
 }
