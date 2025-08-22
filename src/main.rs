@@ -1,9 +1,10 @@
 use tokio;
 
 mod server;
-use server::Server;
+use server::{ServerClosed, ServerCreated, ServerRunning};
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
     println!("Hello, world!");
-    let s = Server::new();
+    let s = ServerCreated::builder().run().unwrap();
+    s.write(server::MessageBus {}).unwrap();
 }

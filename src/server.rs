@@ -14,31 +14,31 @@ use tokio::{
     self,
     net::{TcpListener, TcpStream},
     runtime::Builder,
-    sync::{broadcast, mpsc as tmpsc},
+    sync::{broadcast, mpsc as tmpsc, oneshot},
 };
 
-/// TODO: Finish implementing the Server structure
-///
-/// Publicly exposed server struct that represents a server instance.
-pub struct Server {
-    status: ServerStatus,
+const LOCALHOST_PORT: &str = "127.0.0.1:8080";
+
+/// server created struct, doesn't hold any information currently
+pub struct ServerCreated {
+    port: Option<String>,
+}
+
+/// server running struct, allows communication with the actual serverstate
+pub struct ServerRunning {
     close_tx: broadcast::Sender<()>,
     read_client_tx: tmpsc::Sender<MessageBus>,
 }
 
-/// Status of the server
-enum ServerStatus {
-    Running,
-    NotStarted,
-    NotRunning,
-    Closed,
-}
+/// closed server struct, allows viewing of details in server data.
+pub struct ServerClosed {}
+
 /// TODO: Implement a generic message type that the server can handle,
 /// hopefully at runtime.
 ///
 /// MessageBus structure for interfacing with various reads, writes to and from
 /// the clients
-struct MessageBus;
+pub struct MessageBus;
 
 /// TODO:Finish creating the client connection structure, that will hold
 /// various important information about the client
@@ -46,16 +46,26 @@ struct ClientConn {
     receiver: tmpsc::Receiver<MessageBus>,
 }
 
+struct ClientConnBus {
+    stream: TcpStream,
+    addr: SocketAddr,
+}
+
 /// TODO: Finish defining the listener state
 struct ListenerState {
-    listener: TcpListener,
+    port: String,
     close_rx: broadcast::Receiver<()>,
+    error_tx: tmpsc::Sender<()>,
+    new_conn_tx: tmpsc::Sender<ClientConnBus>,
 }
 
 /// TODO: Finish defining the server state
 struct ServerState {
+    start_rx: oneshot::Receiver<()>,
     close_rx: broadcast::Receiver<()>,
+    listener_error_rx: tmpsc::Receiver<()>,
     read_client_rx: tmpsc::Receiver<MessageBus>,
+    new_conn_rx: tmpsc::Receiver<ClientConnBus>,
     port: String,
 }
 
@@ -63,22 +73,41 @@ struct ServerState {
 /// STRUCTS AND TYPES ^  FUNCTIONS AND METHODS v
 /// ===========================================================================
 
-/// TODO:Since creating a server spawns resources and  threads that we need to
-/// clean up afterwards, If the server is still running, we must clean up
-/// the resources.
-impl Drop for Server {
-    fn drop(&mut self) {}
-}
 #[allow(dead_code)]
-impl Server {
-    /// Creates new server instance.
-    pub fn new() -> Result<Server, Box<dyn Error>> {
-        let (read_client_tx, mut read_client_rx) = tmpsc::channel(1);
-        let (close_tx, close_rx) = broadcast::channel(1);
+#[allow(unused_variables)]
+impl ServerCreated {
+    pub fn builder() -> ServerCreated {
+        ServerCreated { port: None }
+    }
+
+    /// Creates new server instance in the Created state.
+    pub fn run(self) -> Result<ServerRunning, Box<dyn Error>> {
+        let (start_tx, start_rx) = oneshot::channel();
+        let (close_tx, _) = broadcast::channel(1);
+        let (listener_error_tx, listener_error_rx) = tmpsc::channel(1);
+        let (read_client_tx, read_client_rx) = tmpsc::channel(1);
+        let (new_conn_tx, new_conn_rx) = tmpsc::channel(1);
+
+        let port = self.port.unwrap_or(String::from(LOCALHOST_PORT));
+
+        let listener_state = ListenerState {
+            port: port.clone(),
+            close_rx: close_tx.subscribe(),
+            error_tx: listener_error_tx,
+            new_conn_tx: new_conn_tx,
+        };
         let server_state = ServerState {
-            close_rx: close_rx,
+            start_rx: start_rx,
+            close_rx: close_tx.subscribe(),
+            listener_error_rx: listener_error_rx,
             read_client_rx: read_client_rx,
+            new_conn_rx: new_conn_rx,
             port: String::from("127.0.0.1:8080"),
+        };
+
+        let server_running = ServerRunning {
+            close_tx: close_tx,
+            read_client_tx: read_client_tx,
         };
 
         // NOTE: New thread entrypoint: runs the server separately to maximize
@@ -90,24 +119,28 @@ impl Server {
             else {
                 return;
             };
-            rt.block_on(server_state.serve());
+
+            /// NOTE: this should be changed to just fail the entire server structure, not panic
+            let r = rt.block_on({
+                tokio::spawn(async move {
+                    let res = listener_state.listen().await;
+                    match res {
+                        Err(e) => eprintln!("Error found in {}", e),
+                        _ => (),
+                    };
+                });
+
+                server_state.serve()
+            });
         });
 
-        Ok(Server {
-            status: ServerStatus::NotStarted,
-            close_tx: close_tx,
-            read_client_tx: read_client_tx,
-        })
+        Ok(server_running)
     }
+}
 
-    /* TODO: Finish these interfacing functions
-    pub fn start(&mut self) -> Result<(), Box<dyn Error>> {
-        Ok(())
-    }
-    pub fn run(&mut self) -> Result<(), Box<dyn Error>> {
-        Ok(())
-    }
-
+#[allow(dead_code)]
+#[allow(unused_variables)]
+impl ServerRunning {
     pub fn read(&self) -> Result<MessageBus, Box<dyn Error>> {
         Ok(MessageBus {})
     }
@@ -119,6 +152,7 @@ impl Server {
     pub fn read_close(&self) -> Result<Vec<u32>, Box<dyn Error>> {
         Ok(vec![])
     }
+
     pub async fn read_id(&self, conn_id: u32) -> Result<MessageBus, Box<dyn Error>> {
         Ok(MessageBus {})
     }
@@ -135,11 +169,21 @@ impl Server {
         Ok(vec![])
     }
 
-    pub fn close(&self) -> Result<usize, Box<dyn Error>> {
-        let k = self.close_tx.send(())?;
-        Ok(k)
+    /// Transition from Running to Closed state
+    pub fn close(self) -> ServerClosed {
+        let _ = self.close_tx.send(());
+
+        ServerClosed {}
     }
-    */
+}
+
+#[allow(dead_code)]
+impl ServerClosed {
+    /// Methods available only when the server is closed
+    /// For now, closed servers cannot be restarted
+    pub fn is_closed(&self) -> bool {
+        true
+    }
 }
 
 /// TODO: Finish implementing the server state
@@ -149,54 +193,74 @@ impl Server {
 /// interaction data, the main listening loop for handling new connections, and also
 /// interacting with client functions as well. Only Inner is capable of accessing the
 /// inner server as well.
+#[allow(unused_variables)]
 impl ServerState {
-    async fn serve(mut self) {
+    async fn serve(mut self) -> Result<(), Box<dyn Error>> {
         loop {
             tokio::select! {
+                biased;
                 value = self.read_client_rx.recv() => (),
-                _ = self.close_rx.recv() => return,
-
+                _ = self.close_rx.recv() => return Ok(()),
             }
         }
     }
 }
 
-/// TODO: Finish implementing the listener state.
 impl ListenerState {
+    /// listen is the main listening loop that uses ListenerState to store its state.
+    /// Recoverable errors (whenever clients abort connection) are ignored, otherwise
+    /// it panics
     async fn listen(mut self) -> Result<(), Box<dyn Error>> {
+        let listener = match TcpListener::bind(&self.port).await {
+            Ok(x) => x,
+            Err(e) => {
+                self.error_tx.send(()).await?;
+                return Err(Box::new(e) as Box<dyn Error>);
+            }
+        };
         loop {
             tokio::select! {
                 close_signal = self.close_rx.recv() =>
                     return close_signal.map_err(|error| Box::new(error) as Box<dyn Error>),
-                accept_res = self.listener.accept() => {
+                accept_res = listener.accept() => {
                     match accept_res {
-                        Ok((socket, addr)) => self.handle_new_conn(socket, addr)?,
-                        Err(e) => self.handle_error(e)?,
+                        Ok((socket, addr)) => self.handle_new_conn(socket, addr).await?,
+                        Err(e) => self.handle_error(e).await?,
                     }
                 }
             }
         }
     }
 
-    fn handle_new_conn(
+    /// simple function to create the client connection message bus and send it to the
+    /// main server loop. This will block until the main server loop can accept, although
+    /// it should be quick, given that it is prioritized. in the serve loop.
+    async fn handle_new_conn(
         &mut self,
-        socket: TcpStream,
+        stream: TcpStream,
         addr: SocketAddr,
     ) -> Result<(), Box<dyn Error>> {
+        let conn_info = ClientConnBus {
+            stream: stream,
+            addr: addr,
+        };
+        self.new_conn_tx.send(conn_info).await?;
         Ok(())
     }
 
-    fn handle_error(&mut self, error: std::io::Error) -> Result<(), std::io::Error> {
+    /// Simple error handler that doesn't fail the entire thing for certain accept errors.
+    async fn handle_error(&mut self, error: IoError) -> Result<(), IoError> {
         match error.kind() {
             IoErrorKind::ConnectionAborted | IoErrorKind::Interrupted | IoErrorKind::WouldBlock => {
                 Ok(())
             }
 
-            _ => Err(error),
+            _ => {
+                self.error_tx
+                    .try_send(())
+                    .unwrap_or_else(|e| eprintln!("Also got error while sending on error_tx{e}"));
+                Err(error)
+            }
         }
     }
 }
-
-fn read_to_client(client_id: u32) {}
-
-fn write_to_client() {}
