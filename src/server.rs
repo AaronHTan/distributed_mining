@@ -5,9 +5,17 @@
 /// errors are handled and given as errors either to the specified readDrops or
 /// if used with a specific connection, an error is given there. There is a
 /// specific handler for each client function.
-#[allow(unused_imports)]
-use std::{error::Error, sync::mpsc, thread};
-use tokio::{self, runtime::Builder, sync::broadcast, sync::mpsc as tmpsc};
+use std::{
+    error::Error,
+    io::{Error as IoError, ErrorKind as IoErrorKind},
+    net::SocketAddr,
+};
+use tokio::{
+    self,
+    net::{TcpListener, TcpStream},
+    runtime::Builder,
+    sync::{broadcast, mpsc as tmpsc},
+};
 
 /// TODO: Finish implementing the Server structure
 ///
@@ -15,7 +23,7 @@ use tokio::{self, runtime::Builder, sync::broadcast, sync::mpsc as tmpsc};
 pub struct Server {
     status: ServerStatus,
     close_tx: broadcast::Sender<()>,
-    read_client_tx: tmpsc::Sender<Message>,
+    read_client_tx: tmpsc::Sender<MessageBus>,
 }
 
 /// Status of the server
@@ -28,24 +36,27 @@ enum ServerStatus {
 /// TODO: Implement a generic message type that the server can handle,
 /// hopefully at runtime.
 ///
-/// Message structure for interfacing with various reads, writes to and from
+/// MessageBus structure for interfacing with various reads, writes to and from
 /// the clients
-struct Message;
-#[allow(dead_code)]
+struct MessageBus;
 
 /// TODO:Finish creating the client connection structure, that will hold
 /// various important information about the client
 struct ClientConn {
-    receiver: tmpsc::Receiver<Message>,
+    receiver: tmpsc::Receiver<MessageBus>,
 }
 
 /// TODO: Finish defining the listener state
-struct ListenerState {}
+struct ListenerState {
+    listener: TcpListener,
+    close_rx: broadcast::Receiver<()>,
+}
 
 /// TODO: Finish defining the server state
 struct ServerState {
     close_rx: broadcast::Receiver<()>,
-    read_client_rx: tmpsc::Receiver<Message>,
+    read_client_rx: tmpsc::Receiver<MessageBus>,
+    port: String,
 }
 
 /// ===========================================================================
@@ -67,6 +78,7 @@ impl Server {
         let server_state = ServerState {
             close_rx: close_rx,
             read_client_rx: read_client_rx,
+            port: String::from("127.0.0.1:8080"),
         };
 
         // NOTE: New thread entrypoint: runs the server separately to maximize
@@ -96,22 +108,22 @@ impl Server {
         Ok(())
     }
 
-    pub fn read(&self) -> Result<Message, Box<dyn Error>> {
-        Ok(Message {})
+    pub fn read(&self) -> Result<MessageBus, Box<dyn Error>> {
+        Ok(MessageBus {})
     }
 
-    pub fn write(&self, message: Message) -> Result<(), Box<dyn Error>> {
+    pub fn write(&self, message: MessageBus) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
 
     pub fn read_close(&self) -> Result<Vec<u32>, Box<dyn Error>> {
         Ok(vec![])
     }
-    pub async fn read_id(&self, conn_id: u32) -> Result<Message, Box<dyn Error>> {
-        Ok(Message {})
+    pub async fn read_id(&self, conn_id: u32) -> Result<MessageBus, Box<dyn Error>> {
+        Ok(MessageBus {})
     }
 
-    pub async fn write_id(&self, conn_id: u32, message: Message) -> Result<(), Box<dyn Error>> {
+    pub async fn write_id(&self, conn_id: u32, message: MessageBus) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
 
@@ -151,7 +163,38 @@ impl ServerState {
 
 /// TODO: Finish implementing the listener state.
 impl ListenerState {
-    async fn listen(mut self) {}
+    async fn listen(mut self) -> Result<(), Box<dyn Error>> {
+        loop {
+            tokio::select! {
+                close_signal = self.close_rx.recv() =>
+                    return close_signal.map_err(|error| Box::new(error) as Box<dyn Error>),
+                accept_res = self.listener.accept() => {
+                    match accept_res {
+                        Ok((socket, addr)) => self.handle_new_conn(socket, addr)?,
+                        Err(e) => self.handle_error(e)?,
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_new_conn(
+        &mut self,
+        socket: TcpStream,
+        addr: SocketAddr,
+    ) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+
+    fn handle_error(&mut self, error: std::io::Error) -> Result<(), std::io::Error> {
+        match error.kind() {
+            IoErrorKind::ConnectionAborted | IoErrorKind::Interrupted | IoErrorKind::WouldBlock => {
+                Ok(())
+            }
+
+            _ => Err(error),
+        }
+    }
 }
 
 fn read_to_client(client_id: u32) {}
