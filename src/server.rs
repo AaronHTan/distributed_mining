@@ -14,7 +14,7 @@ use tokio::{
     self,
     net::{TcpListener, TcpStream},
     runtime::Builder,
-    sync::{broadcast, mpsc as tmpsc, oneshot},
+    sync::{broadcast, mpsc as tmpsc, oneshot, watch},
 };
 
 const LOCALHOST_PORT: &str = "127.0.0.1:8080";
@@ -43,6 +43,8 @@ pub struct MessageBus;
 /// TODO:Finish creating the client connection structure, that will hold
 /// various important information about the client
 struct ClientConn {
+    stream: TcpStream,
+    addr: SocketAddr,
     receiver: tmpsc::Receiver<MessageBus>,
 }
 
@@ -198,7 +200,9 @@ impl ServerState {
     async fn serve(mut self) -> Result<(), Box<dyn Error>> {
         loop {
             tokio::select! {
-                biased;
+                new_conn = self.new_conn_rx.recv() => {
+
+            }
                 value = self.read_client_rx.recv() => (),
                 _ = self.close_rx.recv() => return Ok(()),
             }
@@ -244,8 +248,15 @@ impl ListenerState {
             stream: stream,
             addr: addr,
         };
-        self.new_conn_tx.send(conn_info).await?;
-        Ok(())
+        match self.new_conn_tx.send(conn_info).await {
+            Err(e) => {
+                self.error_tx
+                    .try_send(())
+                    .unwrap_or_else(|e| eprintln!("Also got error while sending on error_tx{e}"));
+                Err(Box::new(e) as Box<dyn Error>)
+            }
+            Ok(()) => Ok(()),
+        }
     }
 
     /// Simple error handler that doesn't fail the entire thing for certain accept errors.

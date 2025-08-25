@@ -1,5 +1,6 @@
 use tokio;
 
+mod client;
 mod server;
 use server::{ServerClosed, ServerCreated, ServerRunning};
 #[tokio::main(flavor = "multi_thread")]
