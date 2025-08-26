@@ -8,11 +8,11 @@
 use std::{
     error::Error,
     io::{Error as IoError, ErrorKind as IoErrorKind},
-    net::SocketAddr,
+    net::{SocketAddr, UdpSocket},
 };
 use tokio::{
     self,
-    net::{TcpListener, TcpStream},
+    net::{TcpListener, TcpStream, UdpSocket as UdpSocket_T},
     runtime::Builder,
     sync::{broadcast, mpsc as tmpsc, oneshot, watch},
 };
@@ -43,19 +43,18 @@ pub struct MessageBus;
 /// TODO:Finish creating the client connection structure, that will hold
 /// various important information about the client
 struct ClientConn {
-    stream: TcpStream,
     addr: SocketAddr,
     receiver: tmpsc::Receiver<MessageBus>,
 }
 
 struct ClientConnBus {
-    stream: TcpStream,
     addr: SocketAddr,
 }
 
 /// TODO: Finish defining the listener state
 struct ListenerState {
     port: String,
+    addr: SocketAddr,
     close_rx: broadcast::Receiver<()>,
     error_tx: tmpsc::Sender<()>,
     new_conn_tx: tmpsc::Sender<ClientConnBus>,
@@ -69,6 +68,7 @@ struct ServerState {
     read_client_rx: tmpsc::Receiver<MessageBus>,
     new_conn_rx: tmpsc::Receiver<ClientConnBus>,
     port: String,
+    addr: SocketAddr,
 }
 
 /// ===========================================================================
@@ -91,9 +91,11 @@ impl ServerCreated {
         let (new_conn_tx, new_conn_rx) = tmpsc::channel(1);
 
         let port = self.port.unwrap_or(String::from(LOCALHOST_PORT));
+        let addr: SocketAddr = (String::from("0.0.0.0") + &port).parse()?;
 
         let listener_state = ListenerState {
             port: port.clone(),
+            addr: addr.clone(),
             close_rx: close_tx.subscribe(),
             error_tx: listener_error_tx,
             new_conn_tx: new_conn_tx,
@@ -105,6 +107,7 @@ impl ServerCreated {
             read_client_rx: read_client_rx,
             new_conn_rx: new_conn_rx,
             port: String::from("127.0.0.1:8080"),
+            addr: addr,
         };
 
         let server_running = ServerRunning {
@@ -215,20 +218,15 @@ impl ListenerState {
     /// Recoverable errors (whenever clients abort connection) are ignored, otherwise
     /// it panics
     async fn listen(mut self) -> Result<(), Box<dyn Error>> {
-        let listener = match TcpListener::bind(&self.port).await {
-            Ok(x) => x,
-            Err(e) => {
-                self.error_tx.send(()).await?;
-                return Err(Box::new(e) as Box<dyn Error>);
-            }
-        };
+        let udp_socket = UdpSocket_T::bind(self.addr).await?;
+        let mut buf = [0; 2048];
         loop {
             tokio::select! {
                 close_signal = self.close_rx.recv() =>
                     return close_signal.map_err(|error| Box::new(error) as Box<dyn Error>),
-                accept_res = listener.accept() => {
+                accept_res = udp_socket.recv_from(&mut buf) => {
                     match accept_res {
-                        Ok((socket, addr)) => self.handle_new_conn(socket, addr).await?,
+                        Ok((len, addr)) => self.handle_new_conn(addr, &buf[..len]).await?,
                         Err(e) => self.handle_error(e).await?,
                     }
                 }
@@ -241,13 +239,10 @@ impl ListenerState {
     /// it should be quick, given that it is prioritized. in the serve loop.
     async fn handle_new_conn(
         &mut self,
-        stream: TcpStream,
         addr: SocketAddr,
+        buf: &[u8],
     ) -> Result<(), Box<dyn Error>> {
-        let conn_info = ClientConnBus {
-            stream: stream,
-            addr: addr,
-        };
+        let conn_info = ClientConnBus { addr: addr };
         match self.new_conn_tx.send(conn_info).await {
             Err(e) => {
                 self.error_tx

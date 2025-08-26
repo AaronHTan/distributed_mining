@@ -6,43 +6,56 @@
 use std::{
     error::Error,
     io::{Error as IoError, ErrorKind as IoErrorKind},
-    net::SocketAddr,
+    net::{SocketAddr, UdpSocket},
 };
 use tokio::{
     self,
-    net::{TcpListener, TcpStream},
+    net::UdpSocket as UdpSocket_T,
     runtime::Builder,
     sync::{broadcast, mpsc as tmpsc, oneshot, watch},
 };
 
-pub struct ClientBuild {}
+pub struct ClientBuild {
+    server_port: Option<String>,
+}
 pub struct Client {
     port: Option<String>,
 }
 
 struct ClientState {}
 
-struct ListenerState {}
+struct RelayState {}
 impl ClientBuild {
     pub fn build() -> ClientBuild {
-        ClientBuild {}
+        ClientBuild { server_port: None }
     }
 
-    pub fn connect(self) -> Result<Client, Box<dyn Error>> {
+    pub fn add_server(mut self, server_port: &str) -> Self {
+        self.server_port = Some(String::from(server_port));
+        self
+    }
+
+    pub async fn connect(self) -> Result<Client, Box<dyn Error>> {
+        let server_addr: SocketAddr = self
+            .server_port
+            .unwrap_or(String::from("127.0.0.1:8080"))
+            .parse()?;
+        let socket = UdpSocket::bind(server_addr)?;
+        // TODO: make sure server is actually connected before doing anything
         let client_state = ClientState {};
 
-        let listener_state = ListenerState {};
+        let relay_state = RelayState {};
 
         std::thread::spawn(move || {
             let Ok(rt) = Builder::new_multi_thread()
-                .worker_threads(2) // NOTE: Change as required
+                .worker_threads(1) // NOTE: Change as required
                 .build()
             else {
                 return;
             };
             let r = rt.block_on({
                 tokio::spawn(async move {
-                    let res = listener_state.listen().await;
+                    let res = relay_state.listen().await;
                     match res {
                         Err(e) => eprintln!("Error found in {}", e),
                         _ => (),
@@ -65,7 +78,7 @@ impl ClientState {
     }
 }
 
-impl ListenerState {
+impl RelayState {
     async fn listen(mut self) -> Result<(), Box<dyn Error>> {
         loop {}
         Ok(())
