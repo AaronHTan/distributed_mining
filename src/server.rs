@@ -93,7 +93,7 @@ impl ServerCreated {
         let (new_message_tx, new_conn_rx) = tmpsc::channel(1);
 
         let port = self.port.unwrap_or(String::from(LOCALHOST_PORT));
-        let addr: SocketAddr = (String::from("0.0.0.0:") + &port).parse()?;
+        let addr: SocketAddr = port.parse()?;
 
         let listener_state = ListenerState {
             addr: addr.clone(),
@@ -121,18 +121,21 @@ impl ServerCreated {
         std::thread::spawn(move || {
             let Ok(rt) = Builder::new_multi_thread()
                 .worker_threads(2) // NOTE: Change as required
+                .enable_all()
                 .build()
             else {
                 return;
             };
 
             // NOTE: this should be changed to just fail the entire server structure, not panic
-            let r = rt.block_on({
-                tokio::spawn(async move {
+            rt.block_on(async move {
+                let listener_handle = tokio::spawn(async move {
                     listener_state.listen_wrapper().await;
                 });
 
-                server_state.serve_wrapper()
+                server_state.serve_wrapper().await;
+
+                listener_handle.abort();
             });
         });
 
@@ -207,7 +210,7 @@ impl ServerState {
         }
     }
     async fn serve(mut self) -> Result<(), Box<dyn Error>> {
-        self.start_rx.blocking_recv()?;
+        self.start_rx.await?;
         loop {
             tokio::select! {
                 new_conn = self.new_conn_rx.recv() => {

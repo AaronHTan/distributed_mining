@@ -42,7 +42,8 @@ impl ClientBuild {
             .server_port
             .unwrap_or(String::from("127.0.0.1:8080"))
             .parse()?;
-        let socket = UdpSocket_T::bind(server_addr).await?;
+        // Bind to any available local address, don't bind to server address
+        let socket = UdpSocket_T::bind("127.0.0.1:0").await?;
         // TODO: make sure server is actually connected before doing anything
         let client_state = ClientState {
             _addr: server_addr,
@@ -54,11 +55,12 @@ impl ClientBuild {
         std::thread::spawn(move || {
             let Ok(rt) = Builder::new_multi_thread()
                 .worker_threads(1) // NOTE: Change as required
+                .enable_all()
                 .build()
             else {
                 return;
             };
-            let _ = rt.block_on({
+            let _ = rt.block_on(async move {
                 tokio::spawn(async move {
                     let res = relay_state.listen().await;
                     match res {
@@ -67,7 +69,7 @@ impl ClientBuild {
                     };
                 });
 
-                client_state.client()
+                client_state.client().await
             });
         });
 

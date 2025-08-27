@@ -10,7 +10,7 @@ async fn main() {
     println!("Hello, world!");
     let mut s = ServerCreated::builder().run().unwrap();
     let mut c = ClientBuild::build()
-        .add_server("8080")
+        .add_server("127.0.0.1:8080")
         .connect()
         .await
         .unwrap();
