@@ -18,11 +18,11 @@ pub struct ClientBuild {
     server_port: Option<String>,
 }
 pub struct Client {
-    port: Option<String>,
+    _port: Option<String>,
 }
 
 struct ClientState {
-    addr: SocketAddr,
+    _addr: SocketAddr,
     socket: UdpSocket_T,
 }
 
@@ -45,7 +45,7 @@ impl ClientBuild {
         let socket = UdpSocket_T::bind(server_addr).await?;
         // TODO: make sure server is actually connected before doing anything
         let client_state = ClientState {
-            addr: server_addr,
+            _addr: server_addr,
             socket: socket,
         };
 
@@ -71,12 +71,12 @@ impl ClientBuild {
             });
         });
 
-        Ok(Client { port: None })
+        Ok(Client { _port: None })
     }
 }
 
 impl Client {
-    pub async fn write(&mut self) -> Result<(), Box<dyn Error>> {
+    pub async fn write(&mut self, _message: &[u8]) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 }

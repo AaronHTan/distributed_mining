@@ -29,6 +29,7 @@ pub struct ServerCreated {
 }
 
 /// server running struct, allows communication with the actual serverstate
+#[allow(dead_code)]
 pub struct ServerRunning {
     close_tx: tmpsc::Sender<()>,
     read_client_tx: tmpsc::Sender<MessageBus>,
@@ -39,11 +40,13 @@ pub struct ServerClosed {}
 
 /// TODO:Finish creating the client connection structure, that will hold
 /// various important information about the client
+#[allow(dead_code)]
 struct ClientQueue {
     receiver: tmpsc::Receiver<MessageBus>,
     close_rx: broadcast::Receiver<()>,
 }
 
+#[allow(dead_code)]
 struct ClientInfo {
     addr: SocketAddr,
     sender: tmpsc::Sender<MessageBus>,
@@ -52,7 +55,6 @@ struct ClientInfo {
 
 /// TODO: Finish defining the listener state
 struct ListenerState {
-    port: String,
     addr: SocketAddr,
     close_rx: broadcast::Receiver<()>,
     error_tx: tmpsc::Sender<()>,
@@ -60,6 +62,7 @@ struct ListenerState {
 }
 
 /// TODO: Finish defining the server state
+#[allow(dead_code)]
 struct ServerState {
     start_rx: oneshot::Receiver<()>,
     close_tx: broadcast::Sender<()>,
@@ -93,7 +96,6 @@ impl ServerCreated {
         let addr: SocketAddr = (String::from("0.0.0.0:") + &port).parse()?;
 
         let listener_state = ListenerState {
-            port: port.clone(),
             addr: addr.clone(),
             close_rx: close_tx.subscribe(),
             error_tx: close_command_tx.clone(),
@@ -141,31 +143,35 @@ impl ServerCreated {
 #[allow(dead_code)]
 #[allow(unused_variables)]
 impl ServerRunning {
-    pub async fn read(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+    pub async fn read(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {
         Ok(vec![])
     }
 
-    pub async fn write(&self, message: &[u8]) -> Result<(), Box<dyn Error>> {
+    pub async fn write(&mut self, message: &[u8]) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
 
-    pub async fn read_close(&self) -> Result<Vec<u32>, Box<dyn Error>> {
+    pub async fn read_close(&mut self) -> Result<Vec<u32>, Box<dyn Error>> {
         Ok(vec![])
     }
 
-    pub async fn read_id(&self, conn_id: u32) -> Result<Vec<u8>, Box<dyn Error>> {
+    pub async fn read_id(&mut self, conn_id: u32) -> Result<Vec<u8>, Box<dyn Error>> {
         Ok(vec![])
     }
 
-    pub async fn write_id(&self, conn_id: u32, message: MessageBus) -> Result<(), Box<dyn Error>> {
+    pub async fn write_id(
+        &mut self,
+        conn_id: u32,
+        message: MessageBus,
+    ) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
 
-    pub async fn is_valid(&self, conn_id: u32) -> Result<bool, Box<dyn Error>> {
+    pub async fn is_valid(&mut self, conn_id: u32) -> Result<bool, Box<dyn Error>> {
         Ok(false)
     }
 
-    pub async fn client_list(&self) -> Result<Vec<u32>, Box<dyn Error>> {
+    pub async fn client_list(&mut self) -> Result<Vec<u32>, Box<dyn Error>> {
         Ok(vec![])
     }
 
