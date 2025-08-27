@@ -6,14 +6,13 @@
 use std::{
     error::Error,
     io::{Error as IoError, ErrorKind as IoErrorKind},
-    net::{SocketAddr, UdpSocket},
+    net::SocketAddr,
 };
-use tokio::{
-    self,
-    net::UdpSocket as UdpSocket_T,
-    runtime::Builder,
-    sync::{broadcast, mpsc as tmpsc, oneshot, watch},
-};
+use tokio::{net::UdpSocket as UdpSocket_T, runtime::Builder, select};
+
+use super::message::MessageBus;
+const UDP_MAX_SIZE: usize = 65507;
+const CONFIG: bincode::config::Configuration = bincode::config::standard();
 
 pub struct ClientBuild {
     server_port: Option<String>,
@@ -22,7 +21,10 @@ pub struct Client {
     port: Option<String>,
 }
 
-struct ClientState {}
+struct ClientState {
+    addr: SocketAddr,
+    socket: UdpSocket_T,
+}
 
 struct RelayState {}
 impl ClientBuild {
@@ -40,9 +42,12 @@ impl ClientBuild {
             .server_port
             .unwrap_or(String::from("127.0.0.1:8080"))
             .parse()?;
-        let socket = UdpSocket::bind(server_addr)?;
+        let socket = UdpSocket_T::bind(server_addr).await?;
         // TODO: make sure server is actually connected before doing anything
-        let client_state = ClientState {};
+        let client_state = ClientState {
+            addr: server_addr,
+            socket: socket,
+        };
 
         let relay_state = RelayState {};
 
@@ -53,7 +58,7 @@ impl ClientBuild {
             else {
                 return;
             };
-            let r = rt.block_on({
+            let _ = rt.block_on({
                 tokio::spawn(async move {
                     let res = relay_state.listen().await;
                     match res {
@@ -70,17 +75,50 @@ impl ClientBuild {
     }
 }
 
-impl Client {}
+impl Client {
+    pub async fn write(&mut self) -> Result<(), Box<dyn Error>> {
+        return Ok(());
+    }
+}
 
 impl ClientState {
-    async fn client(mut self) {
-        loop {}
+    async fn client(mut self) -> Result<(), Box<dyn Error>> {
+        let mut buf = [0; UDP_MAX_SIZE];
+        loop {
+            select! {
+                accept_res = self.socket.recv_from(&mut buf) => {
+                    match accept_res {
+                        Ok((len, addr)) => self.handle_message(addr, &buf[..len])?,
+                        Err(e) => self.handle_error(e).await?,
+                    }
+                }
+
+            }
+        }
+    }
+
+    fn handle_message(&mut self, addr: SocketAddr, buf: &[u8]) -> Result<(), Box<dyn Error>> {
+        let (message, _): (MessageBus, usize) = bincode::decode_from_slice(buf, CONFIG)?;
+        if message.addr() != &addr {
+            return Ok(());
+        }
+        Ok(())
+    }
+
+    /// Simple error handler that doesn't fail the entire thing for certain accept errors.
+    async fn handle_error(&mut self, error: IoError) -> Result<(), IoError> {
+        match error.kind() {
+            IoErrorKind::ConnectionAborted | IoErrorKind::Interrupted | IoErrorKind::WouldBlock => {
+                Ok(())
+            }
+
+            _ => Err(error),
+        }
     }
 }
 
 impl RelayState {
-    async fn listen(mut self) -> Result<(), Box<dyn Error>> {
-        loop {}
+    async fn listen(self) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
 }

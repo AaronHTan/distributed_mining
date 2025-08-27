@@ -8,16 +8,20 @@
 use std::{
     error::Error,
     io::{Error as IoError, ErrorKind as IoErrorKind},
-    net::{SocketAddr, UdpSocket},
+    net::SocketAddr,
 };
 use tokio::{
     self,
-    net::{TcpListener, TcpStream, UdpSocket as UdpSocket_T},
+    net::UdpSocket as UdpSocket_T,
     runtime::Builder,
-    sync::{broadcast, mpsc as tmpsc, oneshot, watch},
+    sync::{broadcast, mpsc as tmpsc, oneshot},
 };
 
+use super::message::MessageBus;
+
 const LOCALHOST_PORT: &str = "127.0.0.1:8080";
+const UDP_MAX_SIZE: usize = 65507;
+const CONFIG: bincode::config::Configuration = bincode::config::standard();
 
 /// server created struct, doesn't hold any information currently
 pub struct ServerCreated {
@@ -26,29 +30,24 @@ pub struct ServerCreated {
 
 /// server running struct, allows communication with the actual serverstate
 pub struct ServerRunning {
-    close_tx: broadcast::Sender<()>,
+    close_tx: tmpsc::Sender<()>,
     read_client_tx: tmpsc::Sender<MessageBus>,
 }
 
 /// closed server struct, allows viewing of details in server data.
 pub struct ServerClosed {}
 
-/// TODO: Implement a generic message type that the server can handle,
-/// hopefully at runtime.
-///
-/// MessageBus structure for interfacing with various reads, writes to and from
-/// the clients
-pub struct MessageBus;
-
 /// TODO:Finish creating the client connection structure, that will hold
 /// various important information about the client
-struct ClientConn {
-    addr: SocketAddr,
+struct ClientQueue {
     receiver: tmpsc::Receiver<MessageBus>,
+    close_rx: broadcast::Receiver<()>,
 }
 
-struct ClientConnBus {
+struct ClientInfo {
     addr: SocketAddr,
+    sender: tmpsc::Sender<MessageBus>,
+    current_id: usize,
 }
 
 /// TODO: Finish defining the listener state
@@ -57,16 +56,16 @@ struct ListenerState {
     addr: SocketAddr,
     close_rx: broadcast::Receiver<()>,
     error_tx: tmpsc::Sender<()>,
-    new_conn_tx: tmpsc::Sender<ClientConnBus>,
+    new_message_tx: tmpsc::Sender<MessageBus>,
 }
 
 /// TODO: Finish defining the server state
 struct ServerState {
     start_rx: oneshot::Receiver<()>,
-    close_rx: broadcast::Receiver<()>,
-    listener_error_rx: tmpsc::Receiver<()>,
+    close_tx: broadcast::Sender<()>,
+    close_command_rx: tmpsc::Receiver<()>,
     read_client_rx: tmpsc::Receiver<MessageBus>,
-    new_conn_rx: tmpsc::Receiver<ClientConnBus>,
+    new_conn_rx: tmpsc::Receiver<MessageBus>,
     port: String,
     addr: SocketAddr,
 }
@@ -86,24 +85,24 @@ impl ServerCreated {
     pub fn run(self) -> Result<ServerRunning, Box<dyn Error>> {
         let (start_tx, start_rx) = oneshot::channel();
         let (close_tx, _) = broadcast::channel(1);
-        let (listener_error_tx, listener_error_rx) = tmpsc::channel(1);
+        let (close_command_tx, close_command_rx) = tmpsc::channel(1);
         let (read_client_tx, read_client_rx) = tmpsc::channel(1);
-        let (new_conn_tx, new_conn_rx) = tmpsc::channel(1);
+        let (new_message_tx, new_conn_rx) = tmpsc::channel(1);
 
         let port = self.port.unwrap_or(String::from(LOCALHOST_PORT));
-        let addr: SocketAddr = (String::from("0.0.0.0") + &port).parse()?;
+        let addr: SocketAddr = (String::from("0.0.0.0:") + &port).parse()?;
 
         let listener_state = ListenerState {
             port: port.clone(),
             addr: addr.clone(),
             close_rx: close_tx.subscribe(),
-            error_tx: listener_error_tx,
-            new_conn_tx: new_conn_tx,
+            error_tx: close_command_tx.clone(),
+            new_message_tx: new_message_tx,
         };
         let server_state = ServerState {
             start_rx: start_rx,
-            close_rx: close_tx.subscribe(),
-            listener_error_rx: listener_error_rx,
+            close_tx: close_tx,
+            close_command_rx: close_command_rx,
             read_client_rx: read_client_rx,
             new_conn_rx: new_conn_rx,
             port: String::from("127.0.0.1:8080"),
@@ -111,7 +110,7 @@ impl ServerCreated {
         };
 
         let server_running = ServerRunning {
-            close_tx: close_tx,
+            close_tx: close_command_tx,
             read_client_tx: read_client_tx,
         };
 
@@ -125,17 +124,13 @@ impl ServerCreated {
                 return;
             };
 
-            /// NOTE: this should be changed to just fail the entire server structure, not panic
+            // NOTE: this should be changed to just fail the entire server structure, not panic
             let r = rt.block_on({
                 tokio::spawn(async move {
-                    let res = listener_state.listen().await;
-                    match res {
-                        Err(e) => eprintln!("Error found in {}", e),
-                        _ => (),
-                    };
+                    listener_state.listen_wrapper().await;
                 });
 
-                server_state.serve()
+                server_state.serve_wrapper()
             });
         });
 
@@ -146,36 +141,36 @@ impl ServerCreated {
 #[allow(dead_code)]
 #[allow(unused_variables)]
 impl ServerRunning {
-    pub fn read(&self) -> Result<MessageBus, Box<dyn Error>> {
-        Ok(MessageBus {})
-    }
-
-    pub fn write(&self, message: MessageBus) -> Result<(), Box<dyn Error>> {
-        Ok(())
-    }
-
-    pub fn read_close(&self) -> Result<Vec<u32>, Box<dyn Error>> {
+    pub async fn read(&self) -> Result<Vec<u8>, Box<dyn Error>> {
         Ok(vec![])
     }
 
-    pub async fn read_id(&self, conn_id: u32) -> Result<MessageBus, Box<dyn Error>> {
-        Ok(MessageBus {})
+    pub async fn write(&self, message: &[u8]) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+
+    pub async fn read_close(&self) -> Result<Vec<u32>, Box<dyn Error>> {
+        Ok(vec![])
+    }
+
+    pub async fn read_id(&self, conn_id: u32) -> Result<Vec<u8>, Box<dyn Error>> {
+        Ok(vec![])
     }
 
     pub async fn write_id(&self, conn_id: u32, message: MessageBus) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
 
-    pub fn is_valid(&self, conn_id: u32) -> Result<bool, Box<dyn Error>> {
+    pub async fn is_valid(&self, conn_id: u32) -> Result<bool, Box<dyn Error>> {
         Ok(false)
     }
 
-    pub fn client_list(&self) -> Result<Vec<u32>, Box<dyn Error>> {
+    pub async fn client_list(&self) -> Result<Vec<u32>, Box<dyn Error>> {
         Ok(vec![])
     }
 
     /// Transition from Running to Closed state
-    pub fn close(self) -> ServerClosed {
+    pub async fn close(self) -> ServerClosed {
         let _ = self.close_tx.send(());
 
         ServerClosed {}
@@ -200,33 +195,49 @@ impl ServerClosed {
 /// inner server as well.
 #[allow(unused_variables)]
 impl ServerState {
+    async fn serve_wrapper(self) {
+        if let Err(e) = self.serve().await {
+            eprintln!("Error {e} occurred in serve, returning");
+        }
+    }
     async fn serve(mut self) -> Result<(), Box<dyn Error>> {
+        self.start_rx.blocking_recv()?;
         loop {
             tokio::select! {
                 new_conn = self.new_conn_rx.recv() => {
 
             }
                 value = self.read_client_rx.recv() => (),
-                _ = self.close_rx.recv() => return Ok(()),
+                _ = self.close_command_rx.recv() => {
+                    return Ok(());
+                }
             }
         }
     }
 }
 
 impl ListenerState {
-    /// listen is the main listening loop that uses ListenerState to store its state.
+    async fn listen_wrapper(mut self) {
+        if let Err(e) = self.listen().await {
+            eprintln!("Error {e} occurred in the listen loop");
+            self.error_tx
+                .try_send(())
+                .unwrap_or_else(|e| eprintln!("Also got error while sending on error_tx{e}"));
+        }
+    }
+    /// listen is the main listening loop that uses handle_message to store its state.
     /// Recoverable errors (whenever clients abort connection) are ignored, otherwise
     /// it panics
-    async fn listen(mut self) -> Result<(), Box<dyn Error>> {
+    async fn listen(&mut self) -> Result<(), Box<dyn Error>> {
         let udp_socket = UdpSocket_T::bind(self.addr).await?;
-        let mut buf = [0; 2048];
+        let mut buf = [0; UDP_MAX_SIZE];
         loop {
             tokio::select! {
                 close_signal = self.close_rx.recv() =>
                     return close_signal.map_err(|error| Box::new(error) as Box<dyn Error>),
                 accept_res = udp_socket.recv_from(&mut buf) => {
                     match accept_res {
-                        Ok((len, addr)) => self.handle_new_conn(addr, &buf[..len]).await?,
+                        Ok((len, addr)) => self.handle_message(addr, &buf[..len]).await?,
                         Err(e) => self.handle_error(e).await?,
                     }
                 }
@@ -237,21 +248,13 @@ impl ListenerState {
     /// simple function to create the client connection message bus and send it to the
     /// main server loop. This will block until the main server loop can accept, although
     /// it should be quick, given that it is prioritized. in the serve loop.
-    async fn handle_new_conn(
-        &mut self,
-        addr: SocketAddr,
-        buf: &[u8],
-    ) -> Result<(), Box<dyn Error>> {
-        let conn_info = ClientConnBus { addr: addr };
-        match self.new_conn_tx.send(conn_info).await {
-            Err(e) => {
-                self.error_tx
-                    .try_send(())
-                    .unwrap_or_else(|e| eprintln!("Also got error while sending on error_tx{e}"));
-                Err(Box::new(e) as Box<dyn Error>)
-            }
-            Ok(()) => Ok(()),
+    async fn handle_message(&mut self, addr: SocketAddr, buf: &[u8]) -> Result<(), Box<dyn Error>> {
+        let (message, _): (MessageBus, usize) = bincode::decode_from_slice(buf, CONFIG)?;
+        if message.addr() != &addr {
+            return Ok(());
         }
+        self.new_message_tx.send(message).await?;
+        Ok(())
     }
 
     /// Simple error handler that doesn't fail the entire thing for certain accept errors.
@@ -261,12 +264,7 @@ impl ListenerState {
                 Ok(())
             }
 
-            _ => {
-                self.error_tx
-                    .try_send(())
-                    .unwrap_or_else(|e| eprintln!("Also got error while sending on error_tx{e}"));
-                Err(error)
-            }
+            _ => Err(error),
         }
     }
 }
