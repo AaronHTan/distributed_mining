@@ -6,15 +6,17 @@
 /// if used with a specific connection, an error is given there. There is a
 /// specific handler for each client function.
 use std::{
+    collections::{HashMap, VecDeque},
     error::Error,
     io::{Error as IoError, ErrorKind as IoErrorKind},
     net::SocketAddr,
+    sync::Arc,
 };
 use tokio::{
     self,
     net::UdpSocket as UdpSocket_T,
     runtime::Builder,
-    sync::{broadcast, mpsc as tmpsc, oneshot},
+    sync::{broadcast, mpsc as tmpsc, oneshot, Mutex},
 };
 
 use super::message::MessageBus;
@@ -22,6 +24,9 @@ use super::message::MessageBus;
 const LOCALHOST_PORT: &str = "127.0.0.1:8080";
 const UDP_MAX_SIZE: usize = 65507;
 const CONFIG: bincode::config::Configuration = bincode::config::standard();
+
+type ClientID = u32;
+type MessageID = u32;
 
 /// server created struct, doesn't hold any information currently
 pub struct ServerCreated {
@@ -49,13 +54,17 @@ struct ClientQueue {
 #[allow(dead_code)]
 struct ClientInfo {
     addr: SocketAddr,
+    client_id: ClientID,
+    send_id: MessageID,
+
     sender: tmpsc::Sender<MessageBus>,
-    current_id: usize,
+    message_queue: VecDeque<MessageBus>,
 }
 
-/// TODO: Finish defining the listener state
 struct ListenerState {
     addr: SocketAddr,
+    socket: Arc<Mutex<UdpSocket_T>>,
+
     close_rx: broadcast::Receiver<()>,
     error_tx: tmpsc::Sender<()>,
     new_message_tx: tmpsc::Sender<MessageBus>,
@@ -64,13 +73,17 @@ struct ListenerState {
 /// TODO: Finish defining the server state
 #[allow(dead_code)]
 struct ServerState {
-    start_rx: oneshot::Receiver<()>,
+    port: String,
+    addr: SocketAddr,
+    socket: Arc<Mutex<UdpSocket_T>>,
+
+    client_map: HashMap<ClientID, ClientInfo>,
+    addr_map: HashMap<SocketAddr, ClientID>,
+
     close_tx: broadcast::Sender<()>,
     close_command_rx: tmpsc::Receiver<()>,
     read_client_rx: tmpsc::Receiver<MessageBus>,
-    new_conn_rx: tmpsc::Receiver<MessageBus>,
-    port: String,
-    addr: SocketAddr,
+    new_message_rx: tmpsc::Receiver<MessageBus>,
 }
 
 /// ===========================================================================
@@ -85,30 +98,36 @@ impl ServerCreated {
     }
 
     /// Creates new server instance in the Created state.
-    pub fn run(self) -> Result<ServerRunning, Box<dyn Error>> {
+    pub async fn run(self) -> Result<ServerRunning, Box<dyn Error>> {
         let (start_tx, start_rx) = oneshot::channel();
         let (close_tx, _) = broadcast::channel(1);
         let (close_command_tx, close_command_rx) = tmpsc::channel(1);
         let (read_client_tx, read_client_rx) = tmpsc::channel(1);
-        let (new_message_tx, new_conn_rx) = tmpsc::channel(1);
+        let (new_message_tx, new_message_rx) = tmpsc::channel(1);
 
         let port = self.port.unwrap_or(String::from(LOCALHOST_PORT));
         let addr: SocketAddr = port.parse()?;
-
+        let udp_socket = UdpSocket_T::bind(addr).await?;
+        let socket = Arc::new(Mutex::new(udp_socket));
         let listener_state = ListenerState {
             addr: addr.clone(),
+            socket: socket.clone(),
             close_rx: close_tx.subscribe(),
             error_tx: close_command_tx.clone(),
             new_message_tx: new_message_tx,
         };
         let server_state = ServerState {
-            start_rx: start_rx,
+            port: String::from("127.0.0.1:8080"),
+            addr: addr,
+            socket: socket,
+
+            client_map: HashMap::new(),
+            addr_map: HashMap::new(),
+
             close_tx: close_tx,
             close_command_rx: close_command_rx,
             read_client_rx: read_client_rx,
-            new_conn_rx: new_conn_rx,
-            port: String::from("127.0.0.1:8080"),
-            addr: addr,
+            new_message_rx: new_message_rx,
         };
 
         let server_running = ServerRunning {
@@ -133,7 +152,7 @@ impl ServerCreated {
                     listener_state.listen_wrapper().await;
                 });
 
-                server_state.serve_wrapper().await;
+                server_state.serve_wrapper(start_rx).await;
 
                 listener_handle.abort();
             });
@@ -204,25 +223,44 @@ impl ServerClosed {
 /// inner server as well.
 #[allow(unused_variables)]
 impl ServerState {
-    async fn serve_wrapper(self) {
-        if let Err(e) = self.serve().await {
+    async fn serve_wrapper(mut self, start_rx: oneshot::Receiver<()>) {
+        if let Err(e) = self.serve(start_rx).await {
             eprintln!("Error {e} occurred in serve, returning");
         }
+
+        println!("Closing Server");
+        if let Err(e) = self.close_tx.send(()) {
+            eprintln!("Error sending in close channel as well!");
+        }
     }
-    async fn serve(mut self) -> Result<(), Box<dyn Error>> {
-        self.start_rx.await?;
+    async fn serve(&mut self, start_rx: oneshot::Receiver<()>) -> Result<(), Box<dyn Error>> {
+        start_rx.await?;
         loop {
             tokio::select! {
-                new_conn = self.new_conn_rx.recv() => {
-
+            new_conn = self.new_message_rx.recv() => {
+                let Some(new_conn) = new_conn else {
+                    println!("channel closed, returning");
+                    return Ok(());
+                };
+                if let Some(&client_id) = self.addr_map.get(new_conn.addr()) {
+                    self.respond(client_id, new_conn);
+                } else if let MessageBus::Connect{addr} = new_conn {
+                    self.connect(new_conn);
+                }
             }
-                value = self.read_client_rx.recv() => (),
-                _ = self.close_command_rx.recv() => {
+            value = self.read_client_rx.recv() => (),
+
+            _ = self.close_command_rx.recv() => {
                     return Ok(());
                 }
+
             }
         }
     }
+
+    fn connect(&mut self, message: MessageBus) {}
+
+    fn respond(&mut self, client_id: ClientID, message: MessageBus) {}
 }
 
 impl ListenerState {
@@ -238,13 +276,14 @@ impl ListenerState {
     /// Recoverable errors (whenever clients abort connection) are ignored, otherwise
     /// it panics
     async fn listen(&mut self) -> Result<(), Box<dyn Error>> {
-        let udp_socket = UdpSocket_T::bind(self.addr).await?;
         let mut buf = [0; UDP_MAX_SIZE];
         loop {
             tokio::select! {
                 close_signal = self.close_rx.recv() =>
                     return close_signal.map_err(|error| Box::new(error) as Box<dyn Error>),
-                accept_res = udp_socket.recv_from(&mut buf) => {
+                accept_res = async {
+                        self.socket.lock().await.recv_from(&mut buf).await
+                    } => {
                     match accept_res {
                         Ok((len, addr)) => self.handle_message(addr, &buf[..len]).await?,
                         Err(e) => self.handle_error(e).await?,

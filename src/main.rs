@@ -8,7 +8,7 @@ use server::ServerCreated;
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
     println!("Hello, world!");
-    let mut s = ServerCreated::builder().run().unwrap();
+    let mut s = ServerCreated::builder().run().await.unwrap();
     let mut c = ClientBuild::build()
         .add_server("127.0.0.1:8080")
         .connect()

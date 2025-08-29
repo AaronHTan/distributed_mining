@@ -16,7 +16,7 @@ pub enum MessageBus {
     },
     Message {
         addr: SocketAddr,
-        id: usize,
+        message_id: usize,
         len: usize,
         message: Box<Vec<u8>>,
     },
