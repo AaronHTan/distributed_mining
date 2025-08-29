@@ -62,7 +62,6 @@ struct ClientInfo {
 }
 
 struct ListenerState {
-    addr: SocketAddr,
     socket: Arc<Mutex<UdpSocket_T>>,
 
     close_rx: broadcast::Receiver<()>,
@@ -77,6 +76,7 @@ struct ServerState {
     addr: SocketAddr,
     socket: Arc<Mutex<UdpSocket_T>>,
 
+    next_id: ClientID,
     client_map: HashMap<ClientID, ClientInfo>,
     addr_map: HashMap<SocketAddr, ClientID>,
 
@@ -110,7 +110,6 @@ impl ServerCreated {
         let udp_socket = UdpSocket_T::bind(addr).await?;
         let socket = Arc::new(Mutex::new(udp_socket));
         let listener_state = ListenerState {
-            addr: addr.clone(),
             socket: socket.clone(),
             close_rx: close_tx.subscribe(),
             error_tx: close_command_tx.clone(),
@@ -121,6 +120,7 @@ impl ServerCreated {
             addr: addr,
             socket: socket,
 
+            next_id: ClientID::default() + 1,
             client_map: HashMap::new(),
             addr_map: HashMap::new(),
 
@@ -243,9 +243,9 @@ impl ServerState {
                     return Ok(());
                 };
                 if let Some(&client_id) = self.addr_map.get(new_conn.addr()) {
-                    self.respond(client_id, new_conn);
+                    self.respond(client_id, new_conn).await;
                 } else if let MessageBus::Connect{addr} = new_conn {
-                    self.connect(new_conn);
+                    self.connect(addr).await;
                 }
             }
             value = self.read_client_rx.recv() => (),
@@ -258,9 +258,33 @@ impl ServerState {
         }
     }
 
-    fn connect(&mut self, message: MessageBus) {}
+    async fn connect(&mut self, addr: SocketAddr) {
+        let client_id = self.next_id;
+        self.next_id += 1;
+        let (sender, receiver) = tmpsc::channel(1);
+        let new_client = ClientInfo {
+            addr,
+            client_id,
+            send_id: MessageID::default(),
+            sender,
+            message_queue: VecDeque::new(),
+        };
 
-    fn respond(&mut self, client_id: ClientID, message: MessageBus) {}
+        let new_queue = ClientQueue {
+            close_rx: self.close_tx.subscribe(),
+            receiver,
+        };
+
+        let message = MessageBus::Ack {
+            addr: self.addr,
+            id: MessageID::default(),
+        };
+        let socket = self.socket.lock().await;
+
+        tokio::spawn(async move { new_queue.run() });
+    }
+
+    async fn respond(&mut self, client_id: ClientID, message: MessageBus) {}
 }
 
 impl ListenerState {
@@ -315,4 +339,8 @@ impl ListenerState {
             _ => Err(error),
         }
     }
+}
+
+impl ClientQueue {
+    async fn run(self) {}
 }

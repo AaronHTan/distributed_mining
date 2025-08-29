@@ -4,6 +4,8 @@ use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
+type MessageID = u32;
+
 /// TODO: Implement a generic message type that the server can handle,
 /// hopefully at runtime.
 ///
@@ -16,17 +18,17 @@ pub enum MessageBus {
     },
     Message {
         addr: SocketAddr,
-        message_id: usize,
+        message_id: MessageID,
         len: usize,
         message: Box<Vec<u8>>,
     },
     Ack {
         addr: SocketAddr,
-        id: usize,
+        id: MessageID,
     },
     CAck {
         addr: SocketAddr,
-        id: usize,
+        id: MessageID,
     },
 }
 
