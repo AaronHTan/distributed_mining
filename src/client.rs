@@ -18,7 +18,7 @@ pub struct ClientBuild {
     server_port: Option<String>,
 }
 pub struct Client {
-    _port: Option<String>,
+    port: Option<String>,
 }
 
 struct ClientState {
@@ -73,7 +73,7 @@ impl ClientBuild {
             });
         });
 
-        Ok(Client { _port: None })
+        Ok(Client { port: None })
     }
 }
 
@@ -122,5 +122,21 @@ impl ClientState {
 impl RelayState {
     async fn listen(self) -> Result<(), Box<dyn Error>> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod client_test {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_creation() {
+        let client = ClientBuild::build()
+            .add_server("127.0.0.1:8080")
+            .connect()
+            .await
+            .unwrap();
+
+        assert_eq!(client.port, None);
     }
 }
