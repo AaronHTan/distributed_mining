@@ -1,3 +1,5 @@
+#![feature(tuple_trait)]
+#![feature(unboxed_closures)]
 use tokio;
 mod client;
 mod message;
